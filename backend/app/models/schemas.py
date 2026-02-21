@@ -10,7 +10,7 @@ from datetime import datetime
 # ── Auth Schemas ─────────────────────────────────────────
 class UserRegister(BaseModel):
     username: str
-    email: str
+    email: EmailStr
     password: str
     full_name: Optional[str] = None
 
@@ -64,6 +64,7 @@ class SessionResponse(BaseModel):
     total_detections: int
     violations_count: int
     compliance_rate: float
+    result_file: Optional[str] = None
     created_at: datetime
     completed_at: Optional[datetime] = None
 

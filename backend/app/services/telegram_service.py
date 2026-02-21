@@ -30,10 +30,15 @@ class TelegramService:
             cls._instance = cls()
         return cls._instance
 
+    @classmethod
+    def reset(cls):
+        """Reset singleton so next get_instance() re-reads settings."""
+        cls._instance = None
+
     def __init__(self):
-        self.enabled = bool(settings.TELEGRAM_ENABLED and settings.TELEGRAM_BOT_TOKEN and settings.TELEGRAM_CHAT_ID)
-        self.bot_token = settings.TELEGRAM_BOT_TOKEN
-        self.chat_id = settings.TELEGRAM_CHAT_ID
+        self.bot_token = settings.TELEGRAM_BOT_TOKEN.strip('"').strip("'")
+        self.chat_id = settings.TELEGRAM_CHAT_ID.strip('"').strip("'")
+        self.enabled = bool(settings.TELEGRAM_ENABLED and self.bot_token and self.chat_id)
         self.base_url = f"https://api.telegram.org/bot{self.bot_token}"
 
         if self.enabled:

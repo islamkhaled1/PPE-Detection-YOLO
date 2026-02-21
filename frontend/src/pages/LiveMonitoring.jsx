@@ -14,20 +14,58 @@ export default function LiveMonitoring() {
   const [selectedWorker, setSelectedWorker] = useState(null);
   const [alerts, setAlerts] = useState([]);
   const [connected, setConnected] = useState(false);
+  const [streamError, setStreamError] = useState(null);
+  const [usingMjpeg, setUsingMjpeg] = useState(false);
   const imgRef = useRef(null);
   const wsRef = useRef(null);
   const canvasRef = useRef(null);
+  const mjpegFallbackRef = useRef(false);
+  const isStreamingRef = useRef(false);
+
+  const startMjpegFallback = useCallback(() => {
+    if (imgRef.current) {
+      setUsingMjpeg(true);
+      setStreamError(null);
+      imgRef.current.src = detectionAPI.getLiveFeedUrl(confidence);
+      // Check if image loads after a short delay
+      const checkTimeout = setTimeout(() => {
+        if (imgRef.current && imgRef.current.naturalWidth === 0) {
+          setStreamError('Camera feed not available. Please check that your webcam is connected.');
+          setIsStreaming(false);
+          setUsingMjpeg(false);
+        }
+      }, 5000);
+      imgRef.current._checkTimeout = checkTimeout;
+    }
+  }, [confidence]);
 
   const startStream = useCallback(() => {
     setIsStreaming(true);
+    isStreamingRef.current = true;
+    setStreamError(null);
+    setUsingMjpeg(false);
+    mjpegFallbackRef.current = false;
     
     // Connect via WebSocket for data
     try {
+      const backendHost = window.location.hostname + ':8000';
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const wsUrl = `${protocol}//${window.location.host}/ws/live?confidence=${confidence}`;
+      
+      // Try direct backend connection first, then proxy
+      let wsUrl;
+      if (window.location.port === '5173' || window.location.port === '3000') {
+        // Dev mode: use Vite proxy
+        wsUrl = `${protocol}//${window.location.host}/ws/live?confidence=${confidence}`;
+      } else {
+        wsUrl = `${protocol}//${window.location.host}/ws/live?confidence=${confidence}`;
+      }
+      
       wsRef.current = new WebSocket(wsUrl);
 
-      wsRef.current.onopen = () => setConnected(true);
+      wsRef.current.onopen = () => {
+        setConnected(true);
+        setStreamError(null);
+      };
       
       wsRef.current.onmessage = (event) => {
         try {
@@ -53,35 +91,61 @@ export default function LiveMonitoring() {
                   }, ...prev].slice(0, 20));
                 });
             }
+          } else if (msg.type === 'error') {
+            console.error('Camera error from server:', msg.message);
+            setStreamError(msg.message);
+            // Try MJPEG fallback
+            if (!mjpegFallbackRef.current) {
+              mjpegFallbackRef.current = true;
+              startMjpegFallback();
+            }
           }
-        } catch {}
+        } catch(e) {
+          console.error('Failed to parse WS message:', e);
+        }
       };
 
       wsRef.current.onclose = () => {
         setConnected(false);
-        setIsStreaming(false);
-      };
-
-      wsRef.current.onerror = () => {
-        setConnected(false);
-        // Fallback to MJPEG stream
-        if (imgRef.current) {
-          imgRef.current.src = detectionAPI.getLiveFeedUrl(confidence);
+        // If we haven't received any frames, try MJPEG fallback
+        if (!mjpegFallbackRef.current && isStreamingRef.current) {
+          mjpegFallbackRef.current = true;
+          startMjpegFallback();
+        } else if (!mjpegFallbackRef.current) {
+          setIsStreaming(false);
+          isStreamingRef.current = false;
         }
       };
-    } catch {
+
+      wsRef.current.onerror = (err) => {
+        console.error('WebSocket error:', err);
+        setConnected(false);
+        // Fallback to MJPEG stream
+        if (!mjpegFallbackRef.current) {
+          mjpegFallbackRef.current = true;
+          startMjpegFallback();
+        }
+      };
+    } catch(e) {
+      console.error('WebSocket creation error:', e);
       // Fallback to MJPEG stream
-      if (imgRef.current) {
-        imgRef.current.src = detectionAPI.getLiveFeedUrl(confidence);
+      if (!mjpegFallbackRef.current) {
+        mjpegFallbackRef.current = true;
+        startMjpegFallback();
       }
     }
-  }, [confidence]);
+  }, [confidence, startMjpegFallback]);
 
   const stopStream = useCallback(() => {
     setIsStreaming(false);
+    isStreamingRef.current = false;
     setConnected(false);
+    setUsingMjpeg(false);
+    setStreamError(null);
+    mjpegFallbackRef.current = false;
     wsRef.current?.close();
     if (imgRef.current) {
+      if (imgRef.current._checkTimeout) clearTimeout(imgRef.current._checkTimeout);
       imgRef.current.src = '';
     }
   }, []);
@@ -112,10 +176,14 @@ export default function LiveMonitoring() {
           <div className={`flex items-center gap-2 px-4 py-2 rounded-xl border ${
             connected 
               ? 'bg-yaqiz-success/10 border-yaqiz-success/30 text-yaqiz-success' 
-              : 'bg-yaqiz-border border-yaqiz-border text-yaqiz-muted'
+              : usingMjpeg
+                ? 'bg-yaqiz-warning/10 border-yaqiz-warning/30 text-yaqiz-warning'
+                : 'bg-yaqiz-border border-yaqiz-border text-yaqiz-muted'
           }`}>
             {connected ? <Wifi className="w-4 h-4" /> : <WifiOff className="w-4 h-4" />}
-            <span className="text-sm font-medium">{connected ? 'Connected' : 'Disconnected'}</span>
+            <span className="text-sm font-medium">
+              {connected ? 'Connected' : usingMjpeg ? 'MJPEG Stream' : 'Disconnected'}
+            </span>
           </div>
 
           {/* Start/Stop */}
@@ -157,7 +225,26 @@ export default function LiveMonitoring() {
             {/* Video */}
             <div className="bg-black aspect-video flex items-center justify-center relative">
               {isStreaming ? (
-                <img ref={imgRef} alt="Live Detection Feed" className="w-full h-full object-contain" />
+                <>
+                  <img ref={imgRef} alt="Live Detection Feed" className="w-full h-full object-contain" />
+                  {streamError && !usingMjpeg && (
+                    <div className="absolute inset-0 flex items-center justify-center bg-black/80">
+                      <div className="text-center p-6">
+                        <AlertTriangle className="w-16 h-16 mx-auto mb-4 text-yaqiz-danger" />
+                        <p className="text-lg text-yaqiz-danger font-semibold mb-2">Camera Error</p>
+                        <p className="text-sm text-yaqiz-muted max-w-md">{streamError}</p>
+                        <button onClick={stopStream} className="mt-4 px-4 py-2 bg-yaqiz-danger/20 border border-yaqiz-danger/30 text-yaqiz-danger rounded-lg hover:bg-yaqiz-danger/30 transition-all">
+                          Close
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                  {usingMjpeg && (
+                    <div className="absolute top-2 left-2 px-3 py-1 bg-yaqiz-warning/20 border border-yaqiz-warning/30 rounded-full">
+                      <span className="text-xs text-yaqiz-warning font-medium">MJPEG Mode</span>
+                    </div>
+                  )}
+                </>
               ) : (
                 <div className="text-center text-yaqiz-muted">
                   <Camera className="w-20 h-20 mx-auto mb-4 opacity-20" />

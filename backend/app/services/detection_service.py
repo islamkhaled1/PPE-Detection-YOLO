@@ -275,7 +275,35 @@ class DetectionService:
         frame_skip: process every Nth frame (1 = no skip, 3 = skip 2 out of 3)
         tracker: optional WorkerTracker instance for persistent ID tracking
         """
-        cap = cv2.VideoCapture(source)
+        import platform
+
+        # For webcam sources, try multiple backends on Windows
+        if isinstance(source, int):
+            cap = None
+            if platform.system() == "Windows":
+                for backend, name in [
+                    (cv2.CAP_DSHOW, "DirectShow"),
+                    (cv2.CAP_MSMF, "MSMF"),
+                    (cv2.CAP_ANY, "Any"),
+                ]:
+                    logger.info(f"[Stream] Trying camera {source} with {name}")
+                    cap = cv2.VideoCapture(source, backend)
+                    if cap.isOpened():
+                        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+                        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+                        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                        logger.info(f"[Stream] Camera opened with {name}")
+                        break
+                    cap.release()
+                    cap = None
+            if cap is None:
+                cap = cv2.VideoCapture(source)
+                if cap.isOpened():
+                    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+                    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+                    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        else:
+            cap = cv2.VideoCapture(source)
         if not cap.isOpened():
             logger.error(f"Cannot open video source: {source}")
             return

@@ -3,7 +3,7 @@ Dashboard Router
 Provides aggregated stats for the executive dashboard.
 """
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import func, desc
 from datetime import datetime, timedelta

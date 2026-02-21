@@ -32,6 +32,12 @@ async def lifespan(app: FastAPI):
     init_db()
     logger.info("Database initialized")
 
+    # Reset Telegram singleton to re-read .env on each restart
+    from app.services.telegram_service import TelegramService
+    TelegramService.reset()
+    telegram = TelegramService.get_instance()
+    logger.info(f"Telegram enabled: {telegram.enabled}")
+
     # Pre-load YOLO model
     try:
         from app.services.detection_service import get_detection_service

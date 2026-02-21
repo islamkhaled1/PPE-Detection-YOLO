@@ -61,9 +61,14 @@ export default function VideoAnalysis() {
   const [sessions, setSessions] = useState([]);
   const [result, setResult] = useState(null);
   const [imageResult, setImageResult] = useState(null);
+  const [pollError, setPollError] = useState(null);
+  const pollingRef = useRef(null);
 
   useEffect(() => {
     loadSessions();
+    return () => {
+      if (pollingRef.current) clearInterval(pollingRef.current);
+    };
   }, []);
 
   const loadSessions = async () => {
@@ -73,16 +78,62 @@ export default function VideoAnalysis() {
     } catch {}
   };
 
+  const startPolling = (sessionId) => {
+    if (pollingRef.current) clearInterval(pollingRef.current);
+    setPollError(null);
+
+    pollingRef.current = setInterval(async () => {
+      try {
+        const { data } = await detectionAPI.getSession(sessionId);
+        const session = data.session || data;
+        const summary = data.summary || session.summary;
+
+        if (session.status === 'completed') {
+          clearInterval(pollingRef.current);
+          pollingRef.current = null;
+          setResult({
+            ...session,
+            summary: summary,
+          });
+          setLoading(false);
+          loadSessions();
+        } else if (session.status === 'failed') {
+          clearInterval(pollingRef.current);
+          pollingRef.current = null;
+          setResult({ ...session, status: 'failed' });
+          setLoading(false);
+          setPollError('Video processing failed. Please try again.');
+          loadSessions();
+        } else {
+          // Still processing — update the result to show progress
+          setResult(prev => ({
+            ...prev,
+            status: session.status,
+          }));
+        }
+      } catch (err) {
+        console.error('Polling error:', err);
+      }
+    }, 2000); // Poll every 2 seconds
+  };
+
   const handleVideoUpload = async (file) => {
     setLoading(true);
     setResult(null);
+    setPollError(null);
     try {
       const { data } = await detectionAPI.uploadVideo(file, confidence, frameSkip);
       setResult(data);
+      // Start polling for completion
+      if (data.id && data.status !== 'completed') {
+        startPolling(data.id);
+      } else {
+        setLoading(false);
+      }
       loadSessions();
     } catch (err) {
       console.error('Upload failed:', err);
-    } finally {
+      setPollError('Upload failed. Please try again.');
       setLoading(false);
     }
   };
@@ -263,6 +314,7 @@ export default function VideoAnalysis() {
           {/* Video Result */}
           {result && tab === 'video' && (
             <div className="space-y-4 animate-slide-up">
+              {/* Status Badge */}
               <div className={`flex items-center gap-3 px-4 py-3 rounded-xl ${
                 result.status === 'pending' || result.status === 'processing'
                   ? 'bg-yaqiz-warning/10 border border-yaqiz-warning/20'
@@ -277,13 +329,140 @@ export default function VideoAnalysis() {
                 ) : (
                   <Loader2 className="w-5 h-5 text-yaqiz-warning animate-spin" />
                 )}
-                <span className="text-sm text-white capitalize">Video {result.status}</span>
+                <span className="text-sm text-white capitalize">
+                  {result.status === 'pending' ? 'Queued for processing...' :
+                   result.status === 'processing' ? 'Processing video... Please wait' :
+                   result.status === 'completed' ? 'Analysis Complete' :
+                   'Processing Failed'}
+                </span>
+                {(result.status === 'pending' || result.status === 'processing') && (
+                  <span className="text-xs text-yaqiz-muted ml-auto">Session #{result.id}</span>
+                )}
               </div>
 
-              <p className="text-sm text-yaqiz-muted">
-                Session #{result.id} — Processing will continue in the background.
-                Check the dashboard for results.
-              </p>
+              {/* Error message */}
+              {pollError && (
+                <div className="px-4 py-3 rounded-xl bg-yaqiz-danger/10 border border-yaqiz-danger/20">
+                  <p className="text-sm text-yaqiz-danger">{pollError}</p>
+                </div>
+              )}
+
+              {/* Completed Results */}
+              {result.status === 'completed' && result.summary && (
+                <div className="space-y-5">
+                  {/* Result Video */}
+                  {result.result_file && (
+                    <div className="bg-black rounded-xl overflow-hidden">
+                      <video
+                        controls
+                        className="w-full max-h-[400px]"
+                        src={(() => {
+                          const filename = result.result_file.split(/[/\\]/).pop();
+                          return `/api/detection/result/${filename}`;
+                        })()}
+                      />
+                    </div>
+                  )}
+
+                  {/* Summary Stats */}
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                    <div className="bg-yaqiz-bg rounded-xl p-4 text-center">
+                      <p className="text-2xl font-bold text-white">{result.summary.total_frames || 0}</p>
+                      <p className="text-xs text-yaqiz-muted mt-1">Total Frames</p>
+                    </div>
+                    <div className="bg-yaqiz-bg rounded-xl p-4 text-center">
+                      <p className="text-2xl font-bold text-white">{result.summary.total_detections || 0}</p>
+                      <p className="text-xs text-yaqiz-muted mt-1">Detections</p>
+                    </div>
+                    <div className="bg-yaqiz-bg rounded-xl p-4 text-center">
+                      <p className={`text-2xl font-bold ${(result.summary.violations_count || 0) > 0 ? 'text-yaqiz-danger' : 'text-yaqiz-success'}`}>
+                        {result.summary.violations_count || 0}
+                      </p>
+                      <p className="text-xs text-yaqiz-muted mt-1">Violations</p>
+                    </div>
+                    <div className="bg-yaqiz-bg rounded-xl p-4 text-center">
+                      <p className={`text-2xl font-bold ${
+                        (result.summary.compliance_rate || 0) >= 80 ? 'text-yaqiz-success' :
+                        (result.summary.compliance_rate || 0) >= 50 ? 'text-yaqiz-warning' : 'text-yaqiz-danger'
+                      }`}>
+                        {result.summary.compliance_rate?.toFixed(1) || 0}%
+                      </p>
+                      <p className="text-xs text-yaqiz-muted mt-1">Compliance</p>
+                    </div>
+                  </div>
+
+                  {/* Compliance Bars */}
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    {[
+                      { label: 'Helmet', value: result.summary.helmet_compliance, icon: '⛑️' },
+                      { label: 'Vest', value: result.summary.vest_compliance, icon: '🦺' },
+                      { label: 'Workers', value: null, count: result.summary.workers_detected, icon: '👷' },
+                    ].map(({ label, value, icon, count }) => (
+                      <div key={label} className="bg-yaqiz-bg rounded-xl p-4">
+                        <div className="flex items-center justify-between mb-2">
+                          <span className="text-sm text-yaqiz-muted">{icon} {label}</span>
+                          {value !== null && value !== undefined ? (
+                            <span className={`text-sm font-bold ${
+                              value >= 80 ? 'text-yaqiz-success' :
+                              value >= 50 ? 'text-yaqiz-warning' : 'text-yaqiz-danger'
+                            }`}>{value?.toFixed(1)}%</span>
+                          ) : (
+                            <span className="text-sm font-bold text-yaqiz-accent">{count || 0}</span>
+                          )}
+                        </div>
+                        {value !== null && value !== undefined && (
+                          <div className="w-full bg-yaqiz-border rounded-full h-2">
+                            <div className={`h-full rounded-full transition-all ${
+                              value >= 80 ? 'bg-yaqiz-success' :
+                              value >= 50 ? 'bg-yaqiz-warning' : 'bg-yaqiz-danger'
+                            }`} style={{ width: `${Math.min(value, 100)}%` }} />
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Tracking Summary */}
+                  {result.summary.tracking && (
+                    <div className="bg-yaqiz-bg rounded-xl p-4">
+                      <h4 className="text-sm font-semibold text-yaqiz-muted mb-3">Worker Tracking Summary</h4>
+                      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                        <div className="text-center">
+                          <p className="text-lg font-bold text-white">{result.summary.tracking.total_unique_workers || 0}</p>
+                          <p className="text-[10px] text-yaqiz-muted">Unique Workers</p>
+                        </div>
+                        <div className="text-center">
+                          <p className="text-lg font-bold text-yaqiz-danger">{result.summary.tracking.violating_workers || 0}</p>
+                          <p className="text-[10px] text-yaqiz-muted">Violating Workers</p>
+                        </div>
+                        <div className="text-center">
+                          <p className="text-lg font-bold text-yaqiz-success">{result.summary.tracking.compliant_workers || 0}</p>
+                          <p className="text-[10px] text-yaqiz-muted">Compliant Workers</p>
+                        </div>
+                        <div className="text-center">
+                          <p className="text-lg font-bold text-yaqiz-accent">{result.summary.alerts_generated || 0}</p>
+                          <p className="text-[10px] text-yaqiz-muted">Alerts Generated</p>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Processing Info */}
+                  <div className="text-xs text-yaqiz-muted flex items-center gap-4 flex-wrap">
+                    <span>Session #{result.id}</span>
+                    <span>Frames inferred: {result.summary.frames_inferred || '-'}</span>
+                    <span>Skip: {result.summary.frame_skip || '-'}x</span>
+                    <span>Device: {result.summary.device || '-'}</span>
+                  </div>
+                </div>
+              )}
+
+              {/* Pending/Processing message */}
+              {(result.status === 'pending' || result.status === 'processing') && (
+                <p className="text-sm text-yaqiz-muted">
+                  Session #{result.id} — Video is being processed. Results will appear here automatically.
+                </p>
+              )}
             </div>
           )}
 

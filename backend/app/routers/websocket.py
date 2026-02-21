@@ -7,6 +7,7 @@ import asyncio
 import cv2
 import json
 import logging
+import platform
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query
 from app.services.detection_service import get_detection_service
 from app.services.websocket_manager import ws_manager
@@ -18,6 +19,45 @@ logger = logging.getLogger("yaqiz.ws")
 router = APIRouter(tags=["WebSocket"])
 
 
+def _open_camera(index: int = 0) -> cv2.VideoCapture:
+    """Try multiple backends to open camera reliably (especially on Windows)"""
+    backends = []
+    if platform.system() == "Windows":
+        backends = [
+            (cv2.CAP_DSHOW, "DirectShow"),
+            (cv2.CAP_MSMF, "MSMF"),
+            (cv2.CAP_ANY, "Any"),
+        ]
+    else:
+        backends = [
+            (cv2.CAP_V4L2, "V4L2"),
+            (cv2.CAP_ANY, "Any"),
+        ]
+
+    for backend, name in backends:
+        logger.info(f"Trying camera {index} with backend {name} ({backend})")
+        cap = cv2.VideoCapture(index, backend)
+        if cap.isOpened():
+            # Set reasonable resolution
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            logger.info(f"Camera opened successfully with {name}")
+            return cap
+        cap.release()
+        logger.warning(f"Failed to open camera with {name}")
+
+    # Last fallback: plain VideoCapture(0)
+    logger.info("Trying plain VideoCapture(0) as final fallback")
+    cap = cv2.VideoCapture(index)
+    if cap.isOpened():
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        logger.info("Camera opened with default backend")
+    return cap
+
+
 @router.websocket("/ws/live")
 async def websocket_live_feed(websocket: WebSocket, confidence: float = Query(default=0.5)):
     """WebSocket endpoint for live camera detection with tracking and structured data"""
@@ -26,9 +66,11 @@ async def websocket_live_feed(websocket: WebSocket, confidence: float = Query(de
     tracker = reset_live_tracker()  # Fresh tracker for each session
 
     try:
-        cap = cv2.VideoCapture(0)
+        cap = _open_camera(0)
         if not cap.isOpened():
-            await websocket.send_json({"type": "error", "message": "Cannot access camera"})
+            logger.error("Cannot access camera with any backend")
+            await websocket.send_json({"type": "error", "message": "Cannot access camera. Make sure a webcam is connected and not in use by another application."})
+            await websocket.close()
             return
 
         frame_num = 0
@@ -90,9 +132,11 @@ async def websocket_live_feed(websocket: WebSocket, confidence: float = Query(de
             if result.get('violations'):
                 try:
                     telegram = get_telegram_service()
-                    await telegram.send_violation_alert(result, frame_num)
+                    sent = await telegram.send_violation_alert(result, frame_num)
+                    if sent:
+                        logger.info(f"Telegram violation alert sent (frame #{frame_num})")
                 except Exception as e:
-                    logger.debug(f"Telegram alert skipped: {e}")
+                    logger.warning(f"Telegram alert failed: {e}")
 
             # Check for client messages (e.g., confidence adjustment)
             try:

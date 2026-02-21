@@ -175,6 +175,24 @@ Thumbs.db
 desktop.ini
 .vscode/
 
-# Large media files (GitHub 100MB limit)
+# Virtual environments
+venv/
+backend/venv/
+.venv/
+
+# Environment files (secrets!)
+.env
+.env.local
+.env.production
+!.env.example
+
+# Large media / video files (GitHub 100MB limit)
 static/files/demo3.mp4
 static/images/InputVideo1.mp4
+backend/results/*.mp4
+backend/uploads/
+
+# IDE
+.idea/
+*.swp
+*.swo

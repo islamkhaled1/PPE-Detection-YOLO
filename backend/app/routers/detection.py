@@ -46,24 +46,22 @@ def _save_upload(upload: UploadFile, subdir: str) -> str:
 
 async def _process_video_task(session_id: int, input_path: str, output_path: str, confidence: float, frame_skip: int = 3):
     """Background task for video processing with worker tracking"""
-    db_gen = next_db()
-    db = next(db_gen)
+    from app.core.database import SessionLocal
+    db = SessionLocal()
     try:
         session = db.query(DetectionSession).filter(DetectionSession.id == session_id).first()
+        if not session:
+            logger.error(f"Session {session_id} not found")
+            return
         session.status = "processing"
         db.commit()
+        logger.info(f"Video processing started for session {session_id}")
 
         service = get_detection_service()
         tracker = get_video_tracker(session_id)
 
-        async def progress_cb(current, total):
-            await ws_manager.send_progress(session_id, current / total * 100, {
-                "current_frame": current,
-                "total_frames": total,
-            })
-
-        # Run sync processing in thread with tracking and frame skipping
-        loop = asyncio.get_event_loop()
+        # Run sync processing in thread
+        loop = asyncio.get_running_loop()
         summary = await loop.run_in_executor(
             None, service.process_video_file, input_path, output_path, confidence, None, frame_skip, tracker
         )
@@ -96,6 +94,9 @@ async def _process_video_task(session_id: int, input_path: str, output_path: str
         # Notify via WebSocket
         await ws_manager.send_progress(session_id, 100, {"status": "completed", "summary": summary})
 
+        logger.info(f"Video processing completed for session {session_id}: "
+                     f"{summary['total_frames']} frames, {summary['violations_count']} violations")
+
         # Send summary to Telegram
         try:
             telegram = get_telegram_service()
@@ -104,21 +105,17 @@ async def _process_video_task(session_id: int, input_path: str, output_path: str
             logger.warning(f"Telegram summary failed: {e}")
 
     except Exception as e:
-        logger.error(f"Video processing error: {e}")
-        session = db.query(DetectionSession).filter(DetectionSession.id == session_id).first()
-        if session:
-            session.status = "failed"
-            db.commit()
+        logger.error(f"Video processing error for session {session_id}: {e}", exc_info=True)
+        try:
+            session = db.query(DetectionSession).filter(DetectionSession.id == session_id).first()
+            if session:
+                session.status = "failed"
+                db.commit()
+        except Exception as db_err:
+            logger.error(f"Failed to update session status: {db_err}")
     finally:
         remove_video_tracker(session_id)
         db.close()
-
-
-def next_db():
-    """Get a database session generator"""
-    from app.core.database import SessionLocal
-    db = SessionLocal()
-    yield db
 
 
 @router.post("/upload-video", response_model=SessionResponse)
@@ -209,6 +206,14 @@ async def upload_image(
             )
             db.add(alert)
         db.commit()
+
+        # Send violation alert to Telegram for image analysis
+        if result.get('violations'):
+            try:
+                telegram = get_telegram_service()
+                await telegram.send_violation_alert(result)
+            except Exception as e:
+                logger.warning(f"Telegram image alert failed: {e}")
 
         return {
             "session_id": session.id,

@@ -16,7 +16,7 @@ class Settings(BaseSettings):
     DEBUG: bool = True
 
     # Auth
-    SECRET_KEY: str = "yaqiz-super-secret-key-change-in-production-2026"
+    SECRET_KEY: str = "change-me-in-dotenv"
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 1440  # 24 hours
 
@@ -69,7 +69,7 @@ class Settings(BaseSettings):
         return p
 
     class Config:
-        env_file = ".env"
+        env_file = Path(__file__).resolve().parent.parent.parent / ".env"
         extra = "allow"
 
 
