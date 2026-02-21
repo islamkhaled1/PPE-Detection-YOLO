@@ -16,6 +16,10 @@ Real-time PPE compliance detection • Workstation fatigue tracking • Instant 
 [![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?style=for-the-badge&logo=docker&logoColor=white)](https://docker.com)
 [![License](https://img.shields.io/badge/License-MIT-green?style=for-the-badge)](LICENSE)
 
+<br />
+
+<img src="static/images/preview.jpeg" alt="YAQIZ Platform Preview" width="700" />
+
 </div>
 
 ---
